@@ -314,29 +314,39 @@ public final class AISUPSDK: ObservableObject {
         }
         
         socket?.on("message_added") { [weak self] data, _ in
-            guard let dict = data.first as? [String: Any],
+            guard let self = self,
+                  let dict = data.first as? [String: Any],
                   let messageDict = dict["message"] as? [String: Any],
-                  let jsonData = try? JSONSerialization.data(withJSONObject: messageDict),
-                  let message = try? JSONDecoder().decode(Message.self, from: jsonData) else {
+                  let jsonData = try? JSONSerialization.data(withJSONObject: messageDict) else {
                 return
             }
             
-            Task { @MainActor in
-                self?.addMessage(message)
-                self?.messageSubject.send(message)
+            do {
+                let message = try self.decoder.decode(Message.self, from: jsonData)
+                Task { @MainActor in
+                    self.addMessage(message)
+                    self.messageSubject.send(message)
+                }
+            } catch {
+                print("[AISUPSDK] Failed to decode message: \(error)")
             }
         }
         
         socket?.on("chat_updated") { [weak self] data, _ in
-            guard let dict = data.first as? [String: Any],
+            guard let self = self,
+                  let dict = data.first as? [String: Any],
                   let chatDict = dict["chat"] as? [String: Any],
-                  let jsonData = try? JSONSerialization.data(withJSONObject: chatDict),
-                  let chat = try? JSONDecoder().decode(Chat.self, from: jsonData) else {
+                  let jsonData = try? JSONSerialization.data(withJSONObject: chatDict) else {
                 return
             }
             
-            Task { @MainActor in
-                self?.chatUpdateSubject.send(chat)
+            do {
+                let chat = try self.decoder.decode(Chat.self, from: jsonData)
+                Task { @MainActor in
+                    self.chatUpdateSubject.send(chat)
+                }
+            } catch {
+                print("[AISUPSDK] Failed to decode chat: \(error)")
             }
         }
         
