@@ -162,19 +162,7 @@ public final class AISUPSDK: ObservableObject {
         
         let (_, response) = try await session.data(for: request)
         try validateResponse(response)
-        
-        // Create local message for immediate UI update
-        let localMessage = Message(
-            id: UUID().uuidString,
-            chat: chatId,
-            content: content,
-            role: .user,
-            type: .text,
-            caption: nil,
-            createdAt: Date(),
-            updatedAt: Date()
-        )
-        addMessage(localMessage)
+        // Message will be added via WebSocket "message_added" event
     }
     
     /// Get message history
