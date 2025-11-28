@@ -125,10 +125,11 @@ public final class AISUPSDK: ObservableObject {
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue(config.apiKey, forHTTPHeaderField: "X-API-Key")
         
-        var body: [String: Any] = ["userName": config.userName]
-        if let chatId = chatId {
-            body["chatId"] = chatId
-        }
+        let clientChatId = chatId ?? UUID().uuidString
+        let body: [String: Any] = [
+            "chatId": clientChatId,
+            "chatNickname": config.userName
+        ]
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
         
         let (data, response) = try await session.data(for: request)
@@ -140,8 +141,7 @@ public final class AISUPSDK: ObservableObject {
     }
     
     /// Send a message
-    @discardableResult
-    public func sendMessage(_ content: String, attachments: [Attachment]? = nil) async throws -> Message {
+    public func sendMessage(_ content: String, attachments: [Attachment]? = nil) async throws {
         guard let chatId = chatId else {
             throw AISUPError.notInitialized
         }
@@ -152,7 +152,7 @@ public final class AISUPSDK: ObservableObject {
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue(config.apiKey, forHTTPHeaderField: "X-API-Key")
         
-        var body: [String: Any] = ["chatId": chatId, "content": content]
+        var body: [String: Any] = ["chatId": chatId, "messageText": content]
         if let attachments = attachments {
             let encoder = JSONEncoder()
             let attachmentsData = try encoder.encode(attachments)
@@ -160,12 +160,21 @@ public final class AISUPSDK: ObservableObject {
         }
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
         
-        let (data, response) = try await session.data(for: request)
+        let (_, response) = try await session.data(for: request)
         try validateResponse(response)
         
-        let result = try decoder.decode(SendMessageResponse.self, from: data)
-        addMessage(result.message)
-        return result.message
+        // Create local message for immediate UI update
+        let localMessage = Message(
+            id: UUID().uuidString,
+            chat: chatId,
+            content: content,
+            role: .user,
+            type: .text,
+            caption: nil,
+            createdAt: Date(),
+            updatedAt: Date()
+        )
+        addMessage(localMessage)
     }
     
     /// Get message history
@@ -174,18 +183,14 @@ public final class AISUPSDK: ObservableObject {
             throw AISUPError.notInitialized
         }
         
-        var components = URLComponents(string: "\(config.apiUrl)/api/integration/messages")!
-        components.queryItems = [
-            URLQueryItem(name: "chatId", value: chatId),
-            URLQueryItem(name: "limit", value: String(limit))
-        ]
-        if let before = before {
-            components.queryItems?.append(URLQueryItem(name: "before", value: before))
-        }
-        
-        var request = URLRequest(url: components.url!)
-        request.httpMethod = "GET"
+        let url = URL(string: "\(config.apiUrl)/api/integration/messages")!
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue(config.apiKey, forHTTPHeaderField: "X-API-Key")
+        
+        let body: [String: Any] = ["chatId": chatId]
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
         
         let (data, response) = try await session.data(for: request)
         try validateResponse(response)

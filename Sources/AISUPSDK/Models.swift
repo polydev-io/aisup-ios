@@ -28,26 +28,59 @@ public struct Message: Codable, Identifiable, Equatable, Hashable, Sendable {
     public let id: String
     public let chat: String
     public let content: String
-    public let sender: MessageSender
-    public let senderName: String?
-    public let attachments: [Attachment]?
+    public let role: MessageRole
+    public let type: MessageType
+    public let caption: String?
     public let createdAt: Date
     public let updatedAt: Date
     
     enum CodingKeys: String, CodingKey {
         case id = "_id"
-        case chat, content, sender, senderName, attachments, createdAt, updatedAt
+        case chat, content, role, type, caption, createdAt, updatedAt
     }
+    
+    public init(
+        id: String,
+        chat: String,
+        content: String,
+        role: MessageRole,
+        type: MessageType = .text,
+        caption: String? = nil,
+        createdAt: Date,
+        updatedAt: Date
+    ) {
+        self.id = id
+        self.chat = chat
+        self.content = content
+        self.role = role
+        self.type = type
+        self.caption = caption
+        self.createdAt = createdAt
+        self.updatedAt = updatedAt
+    }
+    
+    /// Convenience property for UI
+    public var sender: MessageRole { role }
     
     public static func == (lhs: Message, rhs: Message) -> Bool {
         lhs.id == rhs.id
     }
 }
 
-public enum MessageSender: String, Codable, Sendable {
+public enum MessageRole: String, Codable, Sendable {
     case user
     case bot
-    case `operator`
+    case admin
+}
+
+public enum MessageType: String, Codable, Sendable {
+    case text
+    case photo
+    case file
+    case audio
+    case video
+    case videoNote = "video_note"
+    case voice
 }
 
 // MARK: - Attachment
@@ -98,21 +131,30 @@ public enum ChatMode: String, Codable, Sendable {
 // MARK: - API Responses
 
 public struct InitResponse: Codable {
-    public let success: Bool
+    public let response: String
+    public let message: String
+    public let data: InitResponseData
+    
+    public var chatId: String { data.chatId }
+    public var startMessage: String { data.startMessage }
+}
+
+public struct InitResponseData: Codable {
     public let chatId: String
-    public let chat: Chat
-    public let welcomeMessage: String?
+    public let startMessage: String
 }
 
 public struct SendMessageResponse: Codable {
-    public let success: Bool
-    public let message: Message
+    public let response: String
+    public let message: String
 }
 
 public struct MessagesResponse: Codable {
-    public let success: Bool
-    public let messages: [Message]
-    public let hasMore: Bool
+    public let response: String
+    public let message: String
+    public let data: [Message]
+    
+    public var messages: [Message] { data }
 }
 
 public struct UploadResponse: Codable {
