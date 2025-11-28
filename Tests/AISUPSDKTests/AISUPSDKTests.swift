@@ -31,10 +31,16 @@ final class AISUPSDKTests: XCTestCase {
     
     // MARK: - Model Tests
     
-    func testMessageSenderEnum() {
-        XCTAssertEqual(MessageSender.user.rawValue, "user")
-        XCTAssertEqual(MessageSender.bot.rawValue, "bot")
-        XCTAssertEqual(MessageSender.operator.rawValue, "operator")
+    func testMessageRoleEnum() {
+        XCTAssertEqual(MessageRole.user.rawValue, "user")
+        XCTAssertEqual(MessageRole.bot.rawValue, "bot")
+        XCTAssertEqual(MessageRole.admin.rawValue, "admin")
+    }
+    
+    func testMessageTypeEnum() {
+        XCTAssertEqual(MessageType.text.rawValue, "text")
+        XCTAssertEqual(MessageType.photo.rawValue, "photo")
+        XCTAssertEqual(MessageType.file.rawValue, "file")
     }
     
     func testConnectionStatusEnum() {
@@ -105,9 +111,8 @@ final class AISUPSDKTests: XCTestCase {
             "_id": "msg-123",
             "chat": "chat-123",
             "content": "Hello World",
-            "sender": "user",
-            "senderName": "John",
-            "attachments": [],
+            "role": "user",
+            "type": "text",
             "createdAt": "2024-01-01T12:00:00Z",
             "updatedAt": "2024-01-01T12:00:00Z"
         }
@@ -121,8 +126,9 @@ final class AISUPSDKTests: XCTestCase {
         
         XCTAssertEqual(message.id, "msg-123")
         XCTAssertEqual(message.content, "Hello World")
-        XCTAssertEqual(message.sender, .user)
-        XCTAssertEqual(message.senderName, "John")
+        XCTAssertEqual(message.role, .user)
+        XCTAssertEqual(message.sender, .user) // computed property
+        XCTAssertEqual(message.type, .text)
     }
     
     func testChatDecoding() throws {
@@ -187,7 +193,8 @@ final class AISUPSDKTests: XCTestCase {
             "_id": "msg-123",
             "chat": "chat-123",
             "content": "Test",
-            "sender": "user",
+            "role": "user",
+            "type": "text",
             "createdAt": "2024-01-01T12:00:00Z",
             "updatedAt": "2024-01-01T12:00:00Z"
         }
