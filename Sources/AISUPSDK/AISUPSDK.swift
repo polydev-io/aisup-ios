@@ -58,7 +58,86 @@ public final class AISUPSDK: ObservableObject {
         self.config = config
         self.session = URLSession.shared
         self.decoder = JSONDecoder()
-        self.decoder.dateDecodingStrategy = .iso8601
+        
+        // Настройка декодирования дат с поддержкой нескольких форматов
+        let dateFormatter = DateFormatter()
+        dateFormatter.locale = Locale(identifier: "en_US_POSIX")
+        dateFormatter.timeZone = TimeZone(secondsFromGMT: 0)
+        
+        // Создаем кастомную стратегию декодирования дат
+        self.decoder.dateDecodingStrategy = .custom { decoder in
+            let container = try decoder.singleValueContainer()
+            let dateString = try container.decode(String.self)
+            
+            // Формат 1: ISO8601 с T и Z (стандартный)
+            // "2025-12-21T15:47:15Z" или "2025-12-21T15:47:15.123Z"
+            dateFormatter.dateFormat = "yyyy-MM-dd'T'HH:mm:ss.SSS'Z'"
+            if let date = dateFormatter.date(from: dateString) {
+                return date
+            }
+            
+            dateFormatter.dateFormat = "yyyy-MM-dd'T'HH:mm:ss'Z'"
+            if let date = dateFormatter.date(from: dateString) {
+                return date
+            }
+            
+            // Формат 2: ISO8601 без Z (с таймзоной)
+            // "2025-12-21T15:47:15+00:00"
+            dateFormatter.dateFormat = "yyyy-MM-dd'T'HH:mm:ss.SSSXXXXX"
+            if let date = dateFormatter.date(from: dateString) {
+                return date
+            }
+            
+            dateFormatter.dateFormat = "yyyy-MM-dd'T'HH:mm:ssXXXXX"
+            if let date = dateFormatter.date(from: dateString) {
+                return date
+            }
+            
+            // Формат 3: Простой формат без T (что приходит с сервера)
+            // "2025-12-21 15:47:15"
+            dateFormatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
+            if let date = dateFormatter.date(from: dateString) {
+                return date
+            }
+            
+            // Формат 4: С миллисекундами
+            // "2025-12-21 15:47:15.123"
+            dateFormatter.dateFormat = "yyyy-MM-dd HH:mm:ss.SSS"
+            if let date = dateFormatter.date(from: dateString) {
+                return date
+            }
+            
+            // Формат 5: ISO8601 без секунд
+            dateFormatter.dateFormat = "yyyy-MM-dd'T'HH:mm'Z'"
+            if let date = dateFormatter.date(from: dateString) {
+                return date
+            }
+            
+            // Формат 6: Только дата
+            dateFormatter.dateFormat = "yyyy-MM-dd"
+            if let date = dateFormatter.date(from: dateString) {
+                return date
+            }
+            
+            // Если все форматы не подошли, выбрасываем ошибку
+            throw DecodingError.dataCorruptedError(
+                in: container,
+                debugDescription: "Не удалось декодировать дату: \(dateString). Поддерживаемые форматы: ISO8601, yyyy-MM-dd HH:mm:ss"
+            )
+        }
+        
+        // Восстанавливаем сохранённый chatId, если он есть,
+        // чтобы с одного и того же клиента всегда использовался один и тот же чат.
+        let storageKey = Self.chatIdStorageKey(
+            apiUrl: config.apiUrl,
+            apiKey: config.apiKey,
+            userName: config.userName
+        )
+        
+        // 1) Пробуем достать chatId из Keychain (переживает переустановку приложения).
+        if let storedChatId = KeychainStorage.string(forKey: storageKey) {
+            self.chatId = storedChatId
+        }
     }
     
     // MARK: - Public async/await API
@@ -67,11 +146,20 @@ public final class AISUPSDK: ObservableObject {
     public func start() async throws {
         let response = try await initialize()
         
-        // Load message history
-        let messagesResponse = try await getMessages()
-        self.messages = messagesResponse.messages
+        // Load message history (non-critical, continue even if it fails)
+        do {
+            let messagesResponse = try await getMessages()
+            self.messages = messagesResponse.messages
+            print("[AISUPSDK] ✅ История загружена: \(messagesResponse.messages.count) сообщений")
+        } catch {
+            // Ошибка декодирования истории - не критично, продолжаем без истории
+            // Новые сообщения будут приходить через WebSocket
+            print("[AISUPSDK] ⚠️ Не удалось загрузить историю: \(error)")
+            print("[AISUPSDK] Продолжаем работу без истории, новые сообщения придут через WebSocket")
+            self.messages = []
+        }
         
-        // Connect socket
+        // Connect socket (ALWAYS execute, even if history loading failed)
         await connect()
         
         // Wait for connection
@@ -125,6 +213,8 @@ public final class AISUPSDK: ObservableObject {
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue(config.apiKey, forHTTPHeaderField: "X-API-Key")
         
+        // Если chatId уже есть (мы его восстановили получили ранее с сервера),
+        // повторно используем его, чтобы не создавать новый чат для того же клиента.
         let clientChatId = chatId ?? UUID().uuidString
         let body: [String: Any] = [
             "chatId": clientChatId,
@@ -136,7 +226,17 @@ public final class AISUPSDK: ObservableObject {
         try validateResponse(response)
         
         let result = try decoder.decode(InitResponse.self, from: data)
+        
+        // Сохраняем фактический chatId, который вернул сервер, в память и в Keychain
+        // для последующих сессий этого же клиента (переживает переустановку приложения).
         self.chatId = result.chatId
+        let storageKey = Self.chatIdStorageKey(
+            apiUrl: config.apiUrl,
+            apiKey: config.apiKey,
+            userName: config.userName
+        )
+        KeychainStorage.set(result.chatId, forKey: storageKey)
+        
         return result
     }
     
@@ -183,7 +283,22 @@ public final class AISUPSDK: ObservableObject {
         let (data, response) = try await session.data(for: request)
         try validateResponse(response)
         
-        return try decoder.decode(MessagesResponse.self, from: data)
+        // Логирование для отладки
+        if let jsonString = String(data: data, encoding: .utf8) {
+            print("[AISUPSDK] getMessages() raw response: \(jsonString.prefix(500))")
+        }
+        
+        do {
+            let result = try decoder.decode(MessagesResponse.self, from: data)
+            print("[AISUPSDK] getMessages() успешно декодировано: \(result.messages.count) сообщений")
+            return result
+        } catch {
+            print("[AISUPSDK] getMessages() ошибка декодирования: \(error)")
+            if let decodingError = error as? DecodingError {
+                print("[AISUPSDK] Детали ошибки: \(decodingError)")
+            }
+            throw error
+        }
     }
     
     /// Upload a file
@@ -192,28 +307,47 @@ public final class AISUPSDK: ObservableObject {
             throw AISUPError.notInitialized
         }
         
-        let url = URL(string: "\(config.apiUrl)/api/integration/upload")!
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-        request.setValue(config.apiKey, forHTTPHeaderField: "X-API-Key")
-        
         let boundary = UUID().uuidString
-        request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
         
-        var body = Data()
-        body.append("--\(boundary)\r\n".data(using: .utf8)!)
-        body.append("Content-Disposition: form-data; name=\"chatId\"\r\n\r\n\(chatId)\r\n".data(using: .utf8)!)
-        body.append("--\(boundary)\r\n".data(using: .utf8)!)
-        body.append("Content-Disposition: form-data; name=\"file\"; filename=\"\(fileName)\"\r\n".data(using: .utf8)!)
-        body.append("Content-Type: \(mimeType)\r\n\r\n".data(using: .utf8)!)
-        body.append(fileData)
-        body.append("\r\n--\(boundary)--\r\n".data(using: .utf8)!)
-        request.httpBody = body
+        func makeRequest(url: URL) async throws -> (Data, HTTPURLResponse) {
+            var request = URLRequest(url: url)
+            request.httpMethod = "POST"
+            request.setValue(config.apiKey, forHTTPHeaderField: "X-API-Key")
+            request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
+            
+            var body = Data()
+            body.append("--\(boundary)\r\n".data(using: .utf8)!)
+            body.append("Content-Disposition: form-data; name=\"chatId\"\r\n\r\n\(chatId)\r\n".data(using: .utf8)!)
+            body.append("--\(boundary)\r\n".data(using: .utf8)!)
+            body.append("Content-Disposition: form-data; name=\"file\"; filename=\"\(fileName)\"\r\n".data(using: .utf8)!)
+            body.append("Content-Type: \(mimeType)\r\n\r\n".data(using: .utf8)!)
+            body.append(fileData)
+            body.append("\r\n--\(boundary)--\r\n".data(using: .utf8)!)
+            request.httpBody = body
+            
+            let (data, response) = try await session.data(for: request)
+            guard let httpResponse = response as? HTTPURLResponse else {
+                throw AISUPError.invalidResponse
+            }
+            return (data, httpResponse)
+        }
         
-        let (data, response) = try await session.data(for: request)
-        try validateResponse(response)
+        // Единственный известный эндпоинт для загрузки файлов.
+        // На текущем стенде он не реализован (Express отвечает "Cannot POST /api/integration/upload"),
+        // поэтому в случае 404/405 возвращаем осмысленную ошибку без повторных запросов.
+        let url = URL(string: "\(config.apiUrl)/api/integration/upload")!
+        let (data, response) = try await makeRequest(url: url)
         
-        return try decoder.decode(UploadResponse.self, from: data)
+        switch response.statusCode {
+        case 200...299:
+            return try decoder.decode(UploadResponse.self, from: data)
+        case 404, 405:
+            throw AISUPError.serverError("Загрузка файлов на сервер не настроена (HTTP \(response.statusCode)). Обратитесь к разработчикам бэкенда, чтобы включить /api/integration/upload.")
+        case 413:
+            throw AISUPError.serverError("Размер файла слишком большой (HTTP 413). Пожалуйста, выберите файл меньшего размера.")
+        default:
+            throw AISUPError.serverError("HTTP \(response.statusCode)")
+        }
     }
     
     /// Stop and disconnect
@@ -366,6 +500,54 @@ public final class AISUPSDK: ObservableObject {
         guard (200...299).contains(httpResponse.statusCode) else {
             throw AISUPError.serverError("HTTP \(httpResponse.statusCode)")
         }
+    }
+}
+
+// MARK: - Private persistence helpers
+
+private extension AISUPSDK {
+    static func chatIdStorageKey(apiUrl: String, apiKey: String, userName: String) -> String {
+        "AISUPSDK.chatId.\(apiUrl).\(apiKey).\(userName)"
+    }
+}
+
+// MARK: - Simple Keychain storage
+
+private enum KeychainStorage {
+    static func set(_ value: String, forKey key: String) {
+        guard let data = value.data(using: .utf8) else { return }
+        
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrAccount as String: key
+        ]
+        
+        // Удаляем старое значение, если есть
+        SecItemDelete(query as CFDictionary)
+        
+        var attributes = query
+        attributes[kSecValueData as String] = data
+        
+        SecItemAdd(attributes as CFDictionary, nil)
+    }
+    
+    static func string(forKey key: String) -> String? {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrAccount as String: key,
+            kSecReturnData as String: kCFBooleanTrue as Any,
+            kSecMatchLimit as String: kSecMatchLimitOne
+        ]
+        
+        var result: AnyObject?
+        let status = SecItemCopyMatching(query as CFDictionary, &result)
+        guard status == errSecSuccess,
+              let data = result as? Data,
+              let string = String(data: data, encoding: .utf8) else {
+            return nil
+        }
+        
+        return string
     }
 }
 
